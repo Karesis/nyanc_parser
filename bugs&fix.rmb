@@ -1,0 +1,170 @@
+好的，我们来对这份已经非常成熟的 Parser 代码进行一次严格、仔细的最终审查。你的代码已经覆盖了我们 MVP 版本的绝大部分功能，结构也非常清晰。
+
+我的审查将分为三个部分：**已发现的逻辑缺陷**、**待完成的功能 (TODOs)**，以及一些**代码精炼建议**。
+
+-----
+
+### A. 逻辑缺陷与待修复项 (Bugs & Fixes)
+
+这是最需要优先关注的部分。
+
+#### **缺陷 \#1: (关键) `parse_path` 无法处理 `self` 关键字**
+
+  * **所在函数:** `parse_path()`
+
+  * **问题分析:** 你之前的修复方案为了解决预读错误，简化了 `parse_path` 的逻辑，使其只能接受 `Identifier` 开头，而我们语言规范中的 `use self::...` 语法因此被破坏了。
+
+    ```rust
+    // 当前代码
+    let first_segment = self.consume(
+        TokenType::Identifier, // 只接受 Identifier
+        "Expected an identifier or 'self' to start a path.",
+    )?;
+    ```
+
+  * **影响:** 任何以 `self` 开头的 `use` 语句都无法被正确解析。
+
+  * **修复方案:** 我们需要稍微修改 `consume` 的调用方式，或者在这里进行手动检查，以同时支持 `Identifier` 和 `SSelf`。
+
+    **建议修复:**
+
+    ```rust
+    fn parse_path(&mut self) -> Option<Path> {
+        let mut segments = Vec::new();
+        
+        // --- 修复开始 ---
+        // 手动检查第一个段，以支持多种 Token 类型
+        if self.check(TokenType::Identifier) || self.check(TokenType::SSelf) {
+            segments.push(self.current.clone());
+            self.advance();
+        } else {
+            // 如果开头不对，则报告错误
+            let err = ParserError::new(
+                ParserErrorKind::UnexpectedToken {
+                    expected: "an identifier or 'self' to start a path".to_string(),
+                    found: self.current.kind,
+                },
+                self.current.span,
+            );
+            self.diagnostics.add_error(CompilerError::Parser(err));
+            return None;
+        }
+        // --- 修复结束 ---
+
+        while self.check(TokenType::DoubleColon) {
+            self.advance(); // 消耗 '::'
+            segments.push(self.consume(TokenType::Identifier, "Expected an identifier after '::'.")?);
+        }
+
+        Some(Path { segments })
+    }
+    ```
+
+#### **缺陷 \#2: (微妙) 语句终结符处理不一致**
+
+  * **所在函数:** `parse_var_statement()`, `parse_if_statement()`, `parse_while_statement()`, `parse_return_statement()`, `parse_let_statement()`, `parse_expression_statement()`
+
+  * **问题分析:** 我们在修复 `test_let_statement_inside_function` 时，达成了一个共识：**具体的语句解析函数不应该自己消耗末尾的 `Newline`，这个责任应该由调用者（比如 `parse_block_statement`）来承担**。但是，检查代码后发现，这个修改没有被完全应用。例如 `parse_use_statement()` 和 `parse_var_statement()` (从你粘贴的代码片段 `...declaration.");` 来看) 可能还保留了消耗 `Newline` 的逻辑。
+
+  * **影响:** 这会导致语法规则不一致。有些语句需要换行，有些则不需要，这会让 `parse_block_statement` 中的分隔符处理逻辑变得混乱或失效。
+
+  * **修复方案:** **严格审查**以下所有函数，确保它们**完全不**处理结尾的 `Newline` Token。这个 Token 应该留给 `parse_block_statement` 中的循环来统一处理。
+
+      * `parse_var_statement`
+      * `parse_if_statement`
+      * `parse_while_statement`
+      * `parse_return_statement`
+      * `parse_let_statement`
+      * `parse_expression_statement`
+      * `parse_use_statement`
+
+    **示例修复 (应用到 `parse_var_statement`):**
+
+    ```rust
+    fn parse_var_statement(&mut self) -> Option<Stmt> {
+        let name = self.consume(TokenType::Identifier, "Expected a variable name.")?;
+        self.consume(TokenType::Colon, "Expected ':' for a type annotation.")?;
+        let var_type = self.parse_type()?;
+        
+        let value = if self.check(TokenType::Equal) {
+            self.advance(); // 消耗 '='
+            Some(self.parse_expression(Precedence::Assignment)?)
+        } else {
+            None
+        };
+
+        // self.consume(TokenType::Newline, ...); // <-- 确保这一行已被删除
+        Some(Stmt::Var(VarStmt { name, var_type, value }))
+    }
+    ```
+
+-----
+
+### B. 待完成的功能 (TODOs)
+
+这些是我们在代码中留下的、需要后续完成的“坑”。
+
+1.  **`parse_struct_definition()` 尚未实现:**
+
+      * **位置:** `fn parse_struct_definition()`
+      * **现状:** `unimplemented!()`
+      * **下一步:** 需要实现对 `struct Point { x: int, y: int }` 语法的解析。逻辑会和 `parse_function_definition` 解析参数列表非常相似。
+
+2.  **`use` 语句的前缀 (`prefix`) 解析尚未实现:**
+
+      * **位置:** `fn parse_use_statement()`
+      * **现状:** `prefix: None, // 注意：...`
+      * **下一步:** 这是我们 Parser 中逻辑最棘手的部分之一。需要一个健壮的算法来区分 `use a::b` (路径) 和 `use a::b::{c, d}` (前缀+分组)。我们可以作为一个专门的挑战来解决它。
+
+3.  **前缀操作符不完整:**
+
+      * **位置:** `fn get_prefix_precedence()`
+      * **现状:** 注释 `// 未来可以加入 ! 等前缀操作符`
+      * **下一步:** 当我们为 `nyan` 语言加入逻辑非 `!` 操作符时，需要在这里为 `TokenType::Bang` (需要先在 Lexer 中添加) 分配 `Precedence::Prefix`。
+
+-----
+
+### C. 代码精炼建议 (Refinements)
+
+这些不会导致 bug，但可以让代码更优雅、更符合 Rust 的风格。
+
+#### **建议 \#1: 统一 `consume` 的错误信息生成**
+
+  * **现状:** 我们调用 `consume` 时传入一个 `&str` 消息，例如 `consume(TokenType::Identifier, "Expected a variable name.")`。
+
+  * **问题:** 在 `consume` 内部，我们用这个消息构造了 `ParserErrorKind::UnexpectedToken`。这意味着错误信息是硬编码的，不够灵活。
+
+  * **精炼方案:** 可以让 `consume` 不再接受 `message` 参数。它的职责就只是“消耗或者报错”。报错时，它总是生成一个标准的 ` UnexpectedToken { expected: "a  `{:?}`  token", found: ... } `。而在那些需要更具体错误信息的地方（比如 `parse_path`），我们可以在 `consume` 返回 `None` 后，自己构造一个更具体的错误类型并报告。
+
+    **示例精炼:**
+
+    ```rust
+    // consume 签名改变
+    fn consume(&mut self, expected_kind: TokenType) -> Option<Token> {
+        if self.check(expected_kind) {
+            // ...
+        } else {
+            let error = ParserError::new(
+                ParserErrorKind::UnexpectedToken {
+                    expected: format!("{:?}", expected_kind), // 自动生成期望信息
+                    found: self.current.kind,
+                },
+                self.current.span,
+            );
+            // ...
+        }
+    }
+    ```
+
+### 总结与优先级
+
+做得非常出色！我们的 Parser 已经是一个功能极其完备的程序了。
+
+**建议的下一步行动优先级：**
+
+1.  **最高优先级:** 修复 **逻辑缺陷 \#2** (语句终结符不一致)。这是保证语法规则统一性的关键。
+2.  **次高优先级:** 修复 **逻辑缺陷 \#1** (`parse_path` 对 `self` 的支持)。
+3.  **完成后:** 实现 **TODO \#1** (`parse_struct_definition`)，这将使我们的 MVP 语法完全闭合。
+4.  **最后:** 考虑采纳**代码精炼建议**，并挑战剩下的高难度 TODOs。
+
+你可以按照这个清单，逐一进行修复和完善。每完成一项，我们的编译器就会向着第一个可发布版本迈出坚实的一步。
