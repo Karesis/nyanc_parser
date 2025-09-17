@@ -89,8 +89,21 @@ impl AstPrinter {
     }
     
     fn print_struct_definition(&self, def: &StructDef) -> String {
-        // (暂时简化)
-        self.parenthesize(&format!("struct {}", &def.name.lexeme), &[])
+        // --- 完整实现 ---
+        // 我们将字段列表格式化，这与打印函数参数的逻辑非常相似
+        let fields_str = if def.fields.is_empty() {
+            "()".to_string() // 处理没有字段的空结构体
+        } else {
+            def.fields.iter()
+               .map(|field| format!("({}: {})", &field.name.lexeme, self.print_type(&field.param_type)))
+               .collect::<Vec<_>>()
+               .join(" ")
+        };
+        
+        // 为了清晰，我们用 `fields` 而不是 `params` 来包裹
+        let parts = vec![self.parenthesize("fields", &[fields_str])];
+        
+        self.parenthesize(&format!("struct {}", &def.name.lexeme), &parts)
     }
 
 

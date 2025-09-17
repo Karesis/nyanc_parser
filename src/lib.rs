@@ -331,8 +331,20 @@ impl<'a> Parser<'a> {
         }))
     }
     
+    /// 解析一个结构体定义
+    /// e.g., `struct Point { x: int, y: int }`
     fn parse_struct_definition(&mut self) -> Option<Item> {
-        unimplemented!("Parsing for struct definitions is not yet implemented.");
+        // 1. 消耗 'struct' 关键字
+        self.consume(TokenType::Struct, "Expected 'struct' to begin a struct definition.")?;
+        
+        // 2. 消耗结构体名称
+        let name = self.consume(TokenType::Identifier, "Expected a struct name after 'struct'.")?;
+        
+        // 3. 将字段列表的解析工作委托给辅助函数
+        let fields = self.parse_fields()?;
+        
+        // 4. 构建并返回 AST 节点
+        Some(Item::Struct(StructDef { name, fields }))
     }
 
     // --- 语法组件解析 (辅助函数) ---
@@ -342,18 +354,84 @@ impl<'a> Parser<'a> {
         self.consume(TokenType::LeftParen, "Expected '(' after function name.")?;
         let mut params = Vec::new();
 
+        // 在开始解析任何参数或检查 `)` 之前，先跳过所有可能的空行
+        while self.check(TokenType::Newline) {
+            self.advance();
+        }
+
         if !self.check(TokenType::RightParen) {
-            // 解析第一个参数
-            params.push(self.parse_single_parameter()?);
-            // 循环解析后续的参数
-            while self.check(TokenType::Comma) {
-                self.advance(); // 消耗 ','
+            loop {
                 params.push(self.parse_single_parameter()?);
+
+                // 在一个参数之后，同样跳过所有可能的空行
+                while self.check(TokenType::Newline) {
+                    self.advance();
+                }
+
+                if self.check(TokenType::Comma) {
+                    self.advance(); // 消耗逗号
+
+                    // 消耗完逗号后，再跳过所有可能的空行
+                    while self.check(TokenType::Newline) {
+                        self.advance();
+                    }
+
+                    // 检查结尾逗号的情况
+                    if self.check(TokenType::RightParen) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
             }
         }
         
         self.consume(TokenType::RightParen, "Expected ')' to close the parameter list.")?;
         Some(params)
+    }
+
+    /// 解析结构体定义的字段列表 `{ x: int, y: int }`
+    fn parse_fields(&mut self) -> Option<Vec<Param>> {
+        self.consume(TokenType::LeftBrace, "Expected '{' to open struct fields.")?;
+        let mut fields = Vec::new();
+
+        // 在开始解析任何字段或检查 `}` 之前，先跳过所有可能的空行
+        while self.check(TokenType::Newline) {
+            self.advance();
+        }
+
+        if !self.check(TokenType::RightBrace) {
+            // 使用 loop 循环来更好地控制流程
+            loop {
+                fields.push(self.parse_single_parameter()?);
+
+                // 在一个字段之后，同样跳过所有可能的空行
+                while self.check(TokenType::Newline) {
+                    self.advance();
+                }
+
+                // 现在检查分隔符
+                if self.check(TokenType::Comma) {
+                    self.advance(); // 消耗逗号
+
+                    // 消耗完逗号后，再跳过所有可能的空行
+                    while self.check(TokenType::Newline) {
+                        self.advance();
+                    }
+
+                    // 检查结尾逗号的情况
+                    if self.check(TokenType::RightBrace) {
+                        break;
+                    }
+                } else {
+                    // 如果没有逗号，列表必须结束
+                    break;
+                }
+            }
+        }
+        
+        self.consume(TokenType::RightBrace, "Expected '}' to close struct fields.")?;
+        Some(fields)
     }
 
     /// 解析单个参数 `name: type`

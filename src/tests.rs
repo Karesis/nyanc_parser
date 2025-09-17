@@ -93,7 +93,7 @@ fn test_function_definition() {
         return a + b
     }
     "#;
-    let expected = r#"(module (fun add (params ((a: int) (b: int))) (returns int) (block (return (+ a b)))))"#;
+    let expected = r#"(module (fun add (params (a: int) (b: int)) (returns int) (block (return (+ a b)))))"#;
     check_parsing(source, expected);
 }
 
@@ -102,5 +102,30 @@ fn test_complex_use_statement() {
     // 我们暂时测试一个没有 prefix 的复杂 use 语句
     let source = "use {io as iostream, fs}\n";
     let expected = "(module (use {(as io iostream) fs}))";
+    check_parsing(source, expected);
+}
+
+#[test]
+fn test_struct_definition() {
+    // 我们测试一个包含多个字段、指针类型和可选结尾逗号的典型场景
+    let source = r#"
+        struct Point {
+            x: int,
+            y: ^int,
+        }
+    "#;
+    
+    // 这是我们期望的、由 AstPrinter 生成的精确快照
+    let expected = r#"(module (struct Point (fields (x: int) (y: (^ int)))))"#;
+    
+    check_parsing(source, expected);
+}
+
+#[test]
+fn test_empty_struct_definition() {
+    let source = r#"
+        struct Empty {}
+    "#;
+    let expected = r#"(module (struct Empty (fields ())))"#;
     check_parsing(source, expected);
 }
