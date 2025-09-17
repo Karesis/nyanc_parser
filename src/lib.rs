@@ -17,6 +17,7 @@ use reporter::DiagnosticsEngine;
 enum Precedence {
     None,
     Assignment, // =
+    Comparison,     // > < >= <= == !=
     Sum,        // + -
     Product,    // * /
     Prefix,     // -X or !X
@@ -111,6 +112,10 @@ impl<'a> Parser<'a> {
         self.current.kind == kind
     }
 
+    fn peek_check(&self, kind: TokenType) -> bool {
+        self.peek.kind == kind
+    }
+
     /// 检查当前 Token 是否是文件末尾（Eof）。
     fn is_at_end(&self) -> bool {
         self.check(TokenType::Eof)
@@ -167,6 +172,10 @@ impl<'a> Parser<'a> {
     /// 根据 Token 类型查询其作为中缀操作符时的优先级。
     fn get_infix_precedence(kind: TokenType) -> Precedence {
         match kind {
+            TokenType::EqualEqual | TokenType::BangEqual |
+            TokenType::Greater | TokenType::GreaterEqual |
+            TokenType::Less | TokenType::LessEqual => Precedence::Comparison, 
+            
             TokenType::Plus | TokenType::Minus => Precedence::Sum,
             TokenType::Star | TokenType::Slash => Precedence::Product,
             TokenType::Equal => Precedence::Assignment,
@@ -222,23 +231,68 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// 解析一个 `use` 声明。
-    /// e.g., `use std::io`
     /// e.g., `use utils::{math as m, ops}`
+    /// 解析一个 `use` 声明，现支持路径前缀。
     fn parse_use_statement(&mut self) -> Option<Item> {
-        // 1. 消耗 'use' 关键字
         let use_keyword = self.consume(TokenType::Use, "Expected 'use' to begin an import statement.")?;
+
+        // 场景 1: `use { ... }` 或 `use *`，这种最简单，没有前缀。
+        if self.check(TokenType::LeftBrace) || self.check(TokenType::Star) {
+            let tree = self.parse_use_tree()?;
+            self.consume(TokenType::Newline, "Expected a newline after a 'use' statement.")?;
+            return Some(Item::Use(UseStmt {
+                use_keyword,
+                prefix: None,
+                tree,
+            }));
+        }
+
+        // 场景 2: `use path ...`，这是更复杂的情况。
+        let mut segments = Vec::new();
         
-        // 2. 解析核心的 UseTree
-        // 我们将复杂的逻辑委托给一个专门的辅助函数
-        let tree = self.parse_use_tree()?;
-        
-        // 4. 构建并返回 AST 节点
-        Some(Item::Use(UseStmt {
-            use_keyword,
-            prefix: None, // 注意：为了简化，我们暂时不支持 prefix，下一步可以加入
-            tree,
-        }))
+        loop {
+            // 循环的每一步都期望一个路径段
+            if self.check(TokenType::Identifier) || self.check(TokenType::SSelf) {
+                segments.push(self.current.clone());
+                self.advance();
+            } else {
+                let err = ParserError::new(
+                    ParserErrorKind::ExpectedIdentifier,
+                    self.current.span,
+                );
+                self.diagnostics.add_error(CompilerError::Parser(err));
+                return None;
+            }
+
+            // 在消耗掉路径段后，检查后面是什么
+            if self.check(TokenType::DoubleColon) {
+                // 如果是 `::`，我们需要预读，决定是继续路径还是作为前缀
+                self.advance(); // 消耗 `::`
+
+                if self.check(TokenType::LeftBrace) || self.check(TokenType::Star) {
+                    // 场景 2a: `use ...::{` 或 `use ...::*`
+                    // `segments` 就是前缀，我们在这里构建并返回
+                    let prefix = Some(Path { segments });
+                    let tree = self.parse_use_tree()?;
+                    self.consume(TokenType::Newline, "Expected a newline after a 'use' statement.")?;
+                    return Some(Item::Use(UseStmt { use_keyword, prefix, tree }));
+                }
+                // 如果 `::` 后面还是路径，那就继续 loop
+            } else {
+                // 如果路径段后面不是 `::`，说明路径到此结束
+                // `segments` 就是完整的路径
+                let path = Path { segments };
+                let alias = if self.check(TokenType::As) {
+                    self.advance();
+                    Some(self.consume(TokenType::Identifier, "Expected an alias name after 'as'.")?)
+                } else {
+                    None
+                };
+                let tree = UseTree::Simple { path, alias };
+                self.consume(TokenType::Newline, "Expected a newline after a 'use' statement.")?;
+                return Some(Item::Use(UseStmt { use_keyword, prefix: None, tree }));
+            }
+        }
     }
 
     /// 解析 `use` 声明中的树状部分。这是一个递归函数。
@@ -688,7 +742,9 @@ impl<'a> Parser<'a> {
         
         match operator_token.kind {
             // --- 二元操作 ---
-            TokenType::Plus | TokenType::Minus | TokenType::Star | TokenType::Slash => {
+            TokenType::Plus | TokenType::Minus | TokenType::Star | TokenType::Slash |
+            TokenType::Greater | TokenType::GreaterEqual | TokenType::Less |
+            TokenType::LessEqual | TokenType::BangEqual | TokenType::EqualEqual => {
                 let right = self.parse_expression(precedence)?;
                 Some(Expr::Binary(BinaryExpr {
                     left: Box::new(left),

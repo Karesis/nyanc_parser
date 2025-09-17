@@ -129,3 +129,51 @@ fn test_empty_struct_definition() {
     let expected = r#"(module (struct Empty (fields ())))"#;
     check_parsing(source, expected);
 }
+
+#[test]
+fn test_simple_use_path() {
+    let source = "use std::io::Error\n";
+    // 修正后的快照
+    let expected = "(module (use std::io::Error))";
+    check_parsing(source, expected);
+}
+
+#[test]
+fn test_simple_use_with_alias() {
+    let source = "use std::io::Error as IoError\n";
+    // 修正后的快照
+    let expected = "(module (use (as std::io::Error IoError)))";
+    check_parsing(source, expected);
+}
+
+#[test]
+fn test_use_with_group() {
+    let source = "use std::{io, fs, net}\n";
+    // 修正后的快照
+    let expected = "(module (use std::{io fs net}))";
+    check_parsing(source, expected);
+}
+
+#[test]
+fn test_use_with_group_and_aliases() {
+    let source = "use std::{io as iostream, fs}\n";
+    // 修正后的快照
+    let expected = "(module (use std::{(as io iostream) fs}))";
+    check_parsing(source, expected);
+}
+
+#[test]
+fn test_use_with_wildcard() {
+    let source = "use std::io::*\n";
+    // 修正后的快照
+    let expected = "(module (use std::io::*))";
+    check_parsing(source, expected);
+}
+
+#[test]
+fn test_use_self() {
+    let source = "use self::utils\n";
+    // 修正后的快照
+    let expected = "(module (use self::utils))";
+    check_parsing(source, expected);
+}

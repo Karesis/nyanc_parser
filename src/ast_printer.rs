@@ -26,15 +26,14 @@ impl AstPrinter {
     }
 
     fn print_use_statement(&self, stmt: &UseStmt) -> String {
-        // e.g., (use (path self utils)) or (use utils::{...})
+        let mut parts = Vec::new();
         if let Some(prefix) = &stmt.prefix {
-            let prefix_str = self.print_path(prefix);
-            let tree_str = self.print_use_tree(&stmt.tree);
-            self.parenthesize(&format!("use {}", prefix_str), &[tree_str])
-        } else {
-            self.parenthesize("use", &[self.print_use_tree(&stmt.tree)])
+            parts.push(self.print_path(prefix));
         }
+        parts.push(self.print_use_tree(&stmt.tree));
+        self.parenthesize("use", &[parts.join("::")])
     }
+
 
     fn print_use_tree(&self, tree: &UseTree) -> String {
         match tree {
