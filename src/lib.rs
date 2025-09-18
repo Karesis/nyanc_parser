@@ -1,7 +1,3 @@
-// parser/src/lib.rs
-
-pub mod ast;
-mod ast_printer;
 #[cfg(test)]
 mod tests;
 
@@ -26,9 +22,11 @@ enum Precedence {
 }
 
 /// Parser 负责将 Token 流转换为 AST。
-pub struct Parser<'a> {
+pub struct Parser<'a, 'ast> {
     lexer: Lexer<'a>, 
     diagnostics: &'a DiagnosticsEngine,
+
+    ast: &'ast mut Ast,
 
     /// 解析器当前正在处理的 Token
     current: Token,
@@ -39,7 +37,7 @@ pub struct Parser<'a> {
 // 这是 Parser 的主实现块
 impl<'a> Parser<'a> {
     /// 创建一个新的 Parser 实例。
-    pub fn new(mut lexer: Lexer<'a>, diagnostics: &'a DiagnosticsEngine) -> Self {
+    pub fn new(mut lexer: Lexer<'a>, diagnostics: &'a DiagnosticsEngine, ast: &'ast mut Ast) -> Self {
         // 为了初始化，我们创建两个临时的 EOF Token
         // 实际的 Token 将在下面的 advance() 调用中被加载
         let eof_span = Span { file_id: 0, start: 0, end: 0 }; // 假设 file_id, 实际应从 lexer 获取
@@ -48,6 +46,7 @@ impl<'a> Parser<'a> {
         let mut parser = Self {
             lexer,
             diagnostics,
+            ast,
             current: eof_token.clone(),
             peek: eof_token,
         };
@@ -62,7 +61,7 @@ impl<'a> Parser<'a> {
     /// `parse` 是 Parser 的主入口点。
     /// 它会持续解析顶层项目（Item），直到文件末尾，
     /// 最后返回一个代表整个文件的 `Module` AST 节点。
-    pub fn parse(&mut self) -> Module {
+    pub fn parse(&mut self) -> AstId<Module> {
         let mut items = Vec::new();
 
         // 主循环，持续直到文件末尾
@@ -196,7 +195,7 @@ impl<'a> Parser<'a> {
 
     /// 解析一个顶层项目（use 声明、函数定义、结构体定义）。
     /// 这是所有顶层解析的“分派中心”。
-    fn parse_item(&mut self) -> Option<Item> {
+    fn parse_item(&mut self) -> Option<AstId<Item>> {
         // 直接匹配当前 Token
         match self.current.kind {
             TokenType::Use => self.parse_use_statement(),
@@ -233,7 +232,7 @@ impl<'a> Parser<'a> {
 
     /// e.g., `use utils::{math as m, ops}`
     /// 解析一个 `use` 声明，现支持路径前缀。
-    fn parse_use_statement(&mut self) -> Option<Item> {
+    fn parse_use_statement(&mut self) -> Option<AstId<Item>> {
         let use_keyword = self.consume(TokenType::Use, "Expected 'use' to begin an import statement.")?;
 
         // 场景 1: `use { ... }` 或 `use *`，这种最简单，没有前缀。
@@ -296,7 +295,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析 `use` 声明中的树状部分。这是一个递归函数。
-    fn parse_use_tree(&mut self) -> Option<UseTree> {
+    fn parse_use_tree(&mut self) -> Option<AstId<UseTree>> {
         if self.check(TokenType::LeftBrace) {
             // --- 解析分组: `{...}` ---
             self.advance(); // 消耗 '{'
@@ -333,7 +332,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析一个 `a::b::c` 形式的路径。
-    fn parse_path(&mut self) -> Option<Path> {
+    fn parse_path(&mut self) -> Option<AstId<Path>> {
         let mut segments = Vec::new();
         
         // 使用 consume 来处理第一个段，如果失败它会自动报告错误
@@ -355,7 +354,7 @@ impl<'a> Parser<'a> {
     
     /// 解析一个函数定义。
     /// e.g., `fun add(a: int, b: int) -> int { ... }`
-    fn parse_function_definition(&mut self) -> Option<Item> {
+    fn parse_function_definition(&mut self) -> Option<AstId<Item>> {
         // 1. 消耗 'fun' 关键字
         let fun_keyword = self.consume(TokenType::Fun, "Expected 'fun' to start a function definition.")?;
         
@@ -387,7 +386,7 @@ impl<'a> Parser<'a> {
     
     /// 解析一个结构体定义
     /// e.g., `struct Point { x: int, y: int }`
-    fn parse_struct_definition(&mut self) -> Option<Item> {
+    fn parse_struct_definition(&mut self) -> Option<AstId<Item>> {
         // 1. 消耗 'struct' 关键字
         self.consume(TokenType::Struct, "Expected 'struct' to begin a struct definition.")?;
         
@@ -404,7 +403,7 @@ impl<'a> Parser<'a> {
     // --- 语法组件解析 (辅助函数) ---
 
     /// 解析函数定义的参数列表 `(a: int, b: int)`
-    fn parse_parameters(&mut self) -> Option<Vec<Param>> {
+    fn parse_parameters(&mut self) -> Option<Vec<AstId<Param>>> {
         self.consume(TokenType::LeftParen, "Expected '(' after function name.")?;
         let mut params = Vec::new();
 
@@ -445,7 +444,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析结构体定义的字段列表 `{ x: int, y: int }`
-    fn parse_fields(&mut self) -> Option<Vec<Param>> {
+    fn parse_fields(&mut self) -> Option<Vec<AstId<Param>>> {
         self.consume(TokenType::LeftBrace, "Expected '{' to open struct fields.")?;
         let mut fields = Vec::new();
 
@@ -489,7 +488,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析单个参数 `name: type`
-    fn parse_single_parameter(&mut self) -> Option<Param> {
+    fn parse_single_parameter(&mut self) -> Option<AstId<Param>> {
         let name = self.consume(TokenType::Identifier, "Expected a parameter name.")?;
         self.consume(TokenType::Colon, "Expected ':' after parameter name.")?;
         let param_type = self.parse_type()?;
@@ -497,7 +496,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析一个类型注解，支持指针 e.g., `int`, `^Point`, `^^bool`
-    fn parse_type(&mut self) -> Option<Type> {
+    fn parse_type(&mut self) -> Option<AstId<Type>> {
         if self.check(TokenType::Caret) {
             // --- 解析指针类型 ---
             self.advance(); // 消耗 '^'
@@ -519,7 +518,7 @@ impl<'a> Parser<'a> {
     // --- 语句解析 (新层级！) ---
     
     /// 解析一个代码块 `{...}`
-    fn parse_block_statement(&mut self) -> Option<BlockStmt> {
+    fn parse_block_statement(&mut self) -> Option<AstId<BlockStmt>> {
         self.consume(TokenType::LeftBrace, "Expected '{' to start a block.")?;
         let mut stmts = Vec::new();
 
@@ -556,7 +555,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析一条语句。这是所有语句解析的“分派中心”。
-    fn parse_statement(&mut self) -> Option<Stmt> {
+    fn parse_statement(&mut self) -> Option<AstId<Stmt>> {
         // 匹配当前 Token
         match self.current.kind {
             TokenType::If => self.parse_if_statement(),
@@ -583,7 +582,7 @@ impl<'a> Parser<'a> {
 
     /// 解析一个显式变量声明语句
     /// e.g., `x: int` or `y: bool = false`
-    fn parse_var_statement(&mut self) -> Option<Stmt> {
+    fn parse_var_statement(&mut self) -> Option<AstId<Stmt>> {
         let name = self.consume(TokenType::Identifier, "Expected a variable name.")?;
         self.consume(TokenType::Colon, "Expected ':' for a type annotation.")?;
         let var_type = self.parse_type()?;
@@ -599,7 +598,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析 if-else 语句 self.consume(TokenType::Newline, "Expected a newline after a variable declaration.");
-    fn parse_if_statement(&mut self) -> Option<Stmt> {
+    fn parse_if_statement(&mut self) -> Option<AstId<Stmt>> {
         self.consume(TokenType::If, "Expected 'if'.")?;
         let condition = self.parse_expression(Precedence::None)?;
         let then_branch = self.parse_block_statement()?;
@@ -624,7 +623,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析 while 循环
-    fn parse_while_statement(&mut self) -> Option<Stmt> {
+    fn parse_while_statement(&mut self) -> Option<AstId<Stmt>> {
         self.consume(TokenType::While, "Expected 'while'.")?;
         let condition = self.parse_expression(Precedence::None)?;
         let body = self.parse_block_statement()?;
@@ -634,7 +633,7 @@ impl<'a> Parser<'a> {
 
     /// 解析 `return` 语句
     /// e.g., `return` or `return 5`
-    fn parse_return_statement(&mut self) -> Option<Stmt> {
+    fn parse_return_statement(&mut self) -> Option<AstId<Stmt>> {
         let keyword = self.consume(TokenType::Return, "Expected 'return'.")?;
         
         let value = if !self.check(TokenType::Newline) {
@@ -649,7 +648,7 @@ impl<'a> Parser<'a> {
 
     /// 解析 `let` 语句 (类型推断式声明)
     /// e.g., `let x = 10`
-    fn parse_let_statement(&mut self) -> Option<Stmt> {
+    fn parse_let_statement(&mut self) -> Option<AstId<Stmt>> {
         self.consume(TokenType::Let, "Expected 'let'.")?;
         let name = self.consume(TokenType::Identifier, "Expected an identifier after 'let'.")?;
         self.consume(TokenType::Equal, "Expected '=' after identifier in a let statement.")?;
@@ -661,7 +660,7 @@ impl<'a> Parser<'a> {
     
     /// 解析一个表达式语句
     /// e.g., `x = 10` or `my_func()`
-    fn parse_expression_statement(&mut self) -> Option<Stmt> {
+    fn parse_expression_statement(&mut self) -> Option<AstId<Stmt>> {
         let expr = self.parse_expression(Precedence::Assignment)?;
         Some(Stmt::Expression(ExprStmt { expr }))
     }
@@ -672,7 +671,7 @@ impl<'a> Parser<'a> {
     /// 这是我们将要构建的 Pratt Parser 的入口。
     /// 解析一个表达式（Pratt Parser 的主入口）。
     /// `min_precedence` 参数是算法的核心，它告诉函数“只处理比我优先级更高的操作符”。
-    fn parse_expression(&mut self, min_precedence: Precedence) -> Option<Expr> {
+    fn parse_expression(&mut self, min_precedence: Precedence) -> Option<AstId<Expr>> {
         // 1. 解析前缀表达式
         // 任何表达式的开头都必须是一个值、变量、或前缀操作。
         let mut left_expr = self.parse_prefix_expression()?;
@@ -689,7 +688,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析前缀表达式（字面量、变量、分组、一元操作等）。
-    fn parse_prefix_expression(&mut self) -> Option<Expr> {
+    fn parse_prefix_expression(&mut self) -> Option<AstId<Expr>> {
         // “先保存，后前进”
         let token = self.current.clone();
         self.advance();
@@ -734,7 +733,7 @@ impl<'a> Parser<'a> {
     }
 
     // 解析中缀表达式（二元操作、函数调用、成员访问等）。
-    fn parse_infix_expression(&mut self, left: Expr) -> Option<Expr> {
+    fn parse_infix_expression(&mut self, left: Expr) -> Option<AstId<Expr>> {
         let operator_token = self.current.clone();
         self.advance(); // 消耗掉操作符
 
@@ -775,7 +774,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析函数调用的参数列表 `(...)`
-    fn parse_call_expression(&mut self, callee: Expr) -> Option<Expr> {
+    fn parse_call_expression(&mut self, callee: Expr) -> Option<AstId<Expr>> {
         let mut args = Vec::new();
 
         if !self.check(TokenType::RightParen) {
@@ -796,7 +795,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析结构体初始化 `{ field: value, ... }`
-    fn parse_struct_init_expression(&mut self, name: Token) -> Option<Expr> {
+    fn parse_struct_init_expression(&mut self, name: Token) -> Option<AstId<Expr>> {
         self.consume(TokenType::LeftBrace, "Expected '{' to start a struct initializer.")?;
         let mut fields = Vec::new();
 
@@ -817,7 +816,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析单个结构体字段 `name: value`
-    fn parse_struct_field(&mut self) -> Option<(Token, Expr)> {
+    fn parse_struct_field(&mut self) -> Option<(Token, AstId<Expr>)> {
         let name = self.consume(TokenType::Identifier, "Expected a field name.")?;
         self.consume(TokenType::Colon, "Expected ':' after field name.")?;
         let value = self.parse_expression(Precedence::None)?;
@@ -825,7 +824,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析一个赋值表达式 `target = value`
-    fn parse_assignment_expression(&mut self, target: Expr) -> Option<Expr> {
+    fn parse_assignment_expression(&mut self, target: Expr) -> Option<AstId<Expr>> {
         // 在解析右侧时，我们传入比 Assignment 更低的优先级 (None)，
         // 这将正确处理像 a = b = c 这样的右结合链式赋值。
         let value = self.parse_expression(Precedence::None)?;
