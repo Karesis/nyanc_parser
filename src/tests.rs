@@ -1,4 +1,4 @@
-use super::ast_printer::AstPrinter;
+use ast::ast_printer::AstPrinter;
 use super::*;
 use lexer::Lexer;
 use reporter::DiagnosticsEngine;

@@ -7,3 +7,4 @@ edition = "2024"
 lexer = { path = "../lexer" }
 nyanc_core = { path = "../core" }
 reporter = { path = "../reporter" }
+ast ={ path = "../ast" }
