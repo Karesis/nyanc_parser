@@ -40,7 +40,7 @@ fn check_parsing(source: &str, expected_ast_str: &str) {
     let printer = ast::ast_printer::AstPrinter::new(&ast); 
     
     // 关键：使用返回的 module_id 从仓库中查找出真正的 Module 节点
-    let module_node = &ast.modules[module_id.get_raw() as usize];
+    let module_node = &ast.modules[module_id.raw as usize];
     let generated_ast_str = printer.print_module(module_node);
 
     // 快照对比逻辑不变
