@@ -35,7 +35,7 @@ pub struct Parser<'a, 'ast> {
 }
 
 // 这是 Parser 的主实现块
-impl<'a> Parser<'a> {
+impl<'a, 'ast> Parser<'a, 'ast> {
     /// 创建一个新的 Parser 实例。
     pub fn new(mut lexer: Lexer<'a>, diagnostics: &'a DiagnosticsEngine, ast: &'ast mut Ast) -> Self {
         // 为了初始化，我们创建两个临时的 EOF Token
@@ -83,7 +83,7 @@ impl<'a> Parser<'a> {
                 items.push(item);
             }
         }
-        Module { items }
+        self.ast.alloc_module(Module { items })
     }
 
     // -----------------------------------------------------------------
@@ -239,11 +239,11 @@ impl<'a> Parser<'a> {
         if self.check(TokenType::LeftBrace) || self.check(TokenType::Star) {
             let tree = self.parse_use_tree()?;
             self.consume(TokenType::Newline, "Expected a newline after a 'use' statement.")?;
-            return Some(Item::Use(UseStmt {
+            return Some(self.ast.alloc_item(Item::Use(UseStmt {
                 use_keyword,
                 prefix: None,
                 tree,
-            }));
+            })));
         }
 
         // 场景 2: `use path ...`，这是更复杂的情况。
@@ -271,25 +271,25 @@ impl<'a> Parser<'a> {
                 if self.check(TokenType::LeftBrace) || self.check(TokenType::Star) {
                     // 场景 2a: `use ...::{` 或 `use ...::*`
                     // `segments` 就是前缀，我们在这里构建并返回
-                    let prefix = Some(Path { segments });
+                    let prefix = Some(self.ast.alloc_path(Path { segments }));
                     let tree = self.parse_use_tree()?;
                     self.consume(TokenType::Newline, "Expected a newline after a 'use' statement.")?;
-                    return Some(Item::Use(UseStmt { use_keyword, prefix, tree }));
+                    return Some(self.ast.alloc_item(Item::Use(UseStmt { use_keyword, prefix, tree })));
                 }
                 // 如果 `::` 后面还是路径，那就继续 loop
             } else {
                 // 如果路径段后面不是 `::`，说明路径到此结束
                 // `segments` 就是完整的路径
-                let path = Path { segments };
+                let path = self.ast.alloc_path(Path { segments });
                 let alias = if self.check(TokenType::As) {
                     self.advance();
                     Some(self.consume(TokenType::Identifier, "Expected an alias name after 'as'.")?)
                 } else {
                     None
                 };
-                let tree = UseTree::Simple { path, alias };
+                let tree = self.ast.alloc_use_tree(UseTree::Simple { path, alias });
                 self.consume(TokenType::Newline, "Expected a newline after a 'use' statement.")?;
-                return Some(Item::Use(UseStmt { use_keyword, prefix: None, tree }));
+                return Some(self.ast.alloc_item(Item::Use(UseStmt { use_keyword, prefix: None, tree })));
             }
         }
     }
@@ -310,13 +310,13 @@ impl<'a> Parser<'a> {
             }
 
             self.consume(TokenType::RightBrace, "Expected '}' to close an import group.")?;
-            Some(UseTree::Group { items })
+            Some(self.ast.alloc_use_tree(UseTree::Group { items }))
 
         } else if self.check(TokenType::Star) {
             // --- 解析通配符: `*` ---
             let star = self.current.clone();
             self.advance();
-            Some(UseTree::Wildcard { star_token: star })
+            Some(self.ast.alloc_use_tree(UseTree::Wildcard { star_token: star }))
 
         } else {
             // --- 解析简单路径: `path` 或 `path as alias` ---
@@ -327,7 +327,7 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
-            Some(UseTree::Simple { path, alias })
+            Some(self.ast.alloc_use_tree(UseTree::Simple { path, alias }))
         }
     }
 
@@ -347,7 +347,7 @@ impl<'a> Parser<'a> {
             segments.push(self.consume(TokenType::Identifier, "Expected an identifier after '::'.")?);
         }
 
-        Some(Path { segments })
+        Some(self.ast.alloc_path(Path { segments }))
     }
 
     // --- 其他顶层项目解析函数的占位符 ---
@@ -376,12 +376,12 @@ impl<'a> Parser<'a> {
         let body = self.parse_block_statement()?;
         
         // 6. 构建并返回 AST 节点
-        Some(Item::Function(FunctionDef {
+        Some(self.ast.alloc_item(Item::Function(FunctionDef {
             name,
             params,
             return_type,
             body,
-        }))
+        })))
     }
     
     /// 解析一个结构体定义
@@ -397,7 +397,7 @@ impl<'a> Parser<'a> {
         let fields = self.parse_fields()?;
         
         // 4. 构建并返回 AST 节点
-        Some(Item::Struct(StructDef { name, fields }))
+        Some(self.ast.alloc_item(Item::Struct(StructDef { name, fields })))
     }
 
     // --- 语法组件解析 (辅助函数) ---
@@ -414,7 +414,11 @@ impl<'a> Parser<'a> {
 
         if !self.check(TokenType::RightParen) {
             loop {
-                params.push(self.parse_single_parameter()?);
+                params
+                .push(
+                    self
+                    .parse_single_parameter()?
+                );
 
                 // 在一个参数之后，同样跳过所有可能的空行
                 while self.check(TokenType::Newline) {
@@ -492,7 +496,7 @@ impl<'a> Parser<'a> {
         let name = self.consume(TokenType::Identifier, "Expected a parameter name.")?;
         self.consume(TokenType::Colon, "Expected ':' after parameter name.")?;
         let param_type = self.parse_type()?;
-        Some(Param { name, param_type })
+        Some(self.ast.alloc_param(Param { name, param_type }))
     }
 
     /// 解析一个类型注解，支持指针 e.g., `int`, `^Point`, `^^bool`
@@ -502,16 +506,16 @@ impl<'a> Parser<'a> {
             self.advance(); // 消耗 '^'
             // 递归调用 parse_type 来处理多重指针，例如 `^^int`
             let base_type = self.parse_type()?;
-            Some(Type::Pointer { base: Box::new(base_type) })
+            Some(self.ast.alloc_type(Type::Pointer { base: base_type }))
         } else if self.check(TokenType::LeftParen) {
             // --- 新增：解析单元类型 () ---
             self.advance(); // 消耗 '('
             self.consume(TokenType::RightParen, "Expected ')' to form the unit type '()'.")?;
-            Some(Type::Unit)
+            Some(self.ast.alloc_type(Type::Unit))
         } else {
             // --- 解析标识符类型 ---
             let name = self.consume(TokenType::Identifier, "Expected a type name.")?;
-            Some(Type::Identifier { name })
+            Some(self.ast.alloc_type(Type::Identifier { name }))
         }
     }
 
@@ -551,7 +555,7 @@ impl<'a> Parser<'a> {
         }
 
         self.consume(TokenType::RightBrace, "Expected '}' to close a block.")?;
-        Some(BlockStmt { stmts })
+        Some(self.ast.alloc_block_stmt(BlockStmt { stmts }))
     }
 
     /// 解析一条语句。这是所有语句解析的“分派中心”。
@@ -562,7 +566,16 @@ impl<'a> Parser<'a> {
             TokenType::While => self.parse_while_statement(),
             TokenType::Return => self.parse_return_statement(),
             TokenType::Let => self.parse_let_statement(),
-            TokenType::LeftBrace => self.parse_block_statement().map(Stmt::Block),
+            TokenType::LeftBrace => {
+                // `parse_block_statement()` 返回 Option<AstId<BlockStmt>>
+                // 我们用 map 将其内部的值进行转换
+                self.parse_block_statement().map(|block_id| {
+                    // 1. 将 Block ID 包裹成一个 Stmt 枚举（“装箱”）
+                    let block_as_stmt = Stmt::Block(block_id);
+                    // 2. 将这个 Stmt 入库，并返回最终的 Stmt ID（“贴运单”）
+                    self.ast.alloc_stmt(block_as_stmt)
+                })
+            },
             TokenType::Identifier => {
                 if self.peek_is_explicit_var_decl() {
                     self.parse_var_statement()
@@ -594,7 +607,7 @@ impl<'a> Parser<'a> {
             None
         };
 
-        Some(Stmt::Var(VarStmt { name, var_type, value }))
+        Some(self.ast.alloc_stmt(Stmt::Var(VarStmt { name, var_type, value })))
     }
 
     /// 解析 if-else 语句 self.consume(TokenType::Newline, "Expected a newline after a variable declaration.");
@@ -607,19 +620,21 @@ impl<'a> Parser<'a> {
             self.advance(); // 消耗 'else'
             // `else` 后面可以跟着另一个 `if` (构成 else if) 或者一个代码块
             if self.check(TokenType::If) {
-                // 这是 'else if' 的情况
-                // 递归调用 parse_if_statement，它会返回一个 Stmt::If
-                Some(Box::new(self.parse_if_statement()?))
+                // --- `else if` 的情况 ---
+                // `parse_if_statement` 自身就会返回 `Option<AstId<Stmt>>`
+                // 我们直接把它返回即可。
+                self.parse_if_statement()
             } else {
                 // 这是 'else { ... }' 的情况
                 // parse_block_statement 返回 BlockStmt，我们需要把它包装成 Stmt::Block
-                Some(Box::new(Stmt::Block(self.parse_block_statement()?)))
+                let else_block = Stmt::Block(self.parse_block_statement()?);
+                Some(self.ast.alloc_stmt(else_block))
             }
         } else {
             None
         };
 
-        Some(Stmt::If(IfStmt { condition, then_branch, else_branch }))
+        Some(self.ast.alloc_stmt(Stmt::If(IfStmt { condition, then_branch, else_branch })))
     }
 
     /// 解析 while 循环
@@ -628,7 +643,7 @@ impl<'a> Parser<'a> {
         let condition = self.parse_expression(Precedence::None)?;
         let body = self.parse_block_statement()?;
 
-        Some(Stmt::While(WhileStmt { condition, body }))
+        Some(self.ast.alloc_stmt(Stmt::While(WhileStmt { condition, body })))
     }
 
     /// 解析 `return` 语句
@@ -643,7 +658,7 @@ impl<'a> Parser<'a> {
             None
         };
 
-        Some(Stmt::Return(ReturnStmt { keyword, value }))
+        Some(self.ast.alloc_stmt(Stmt::Return(ReturnStmt { keyword, value })))
     }
 
     /// 解析 `let` 语句 (类型推断式声明)
@@ -655,14 +670,14 @@ impl<'a> Parser<'a> {
         
         let value = self.parse_expression(Precedence::Assignment)?;
 
-        Some(Stmt::Let(LetStmt { name, value }))
+        Some(self.ast.alloc_stmt(Stmt::Let(LetStmt { name, value })))
     }
     
     /// 解析一个表达式语句
     /// e.g., `x = 10` or `my_func()`
     fn parse_expression_statement(&mut self) -> Option<AstId<Stmt>> {
         let expr = self.parse_expression(Precedence::Assignment)?;
-        Some(Stmt::Expression(ExprStmt { expr }))
+        Some(self.ast.alloc_stmt(Stmt::Expression(ExprStmt { expr })))
     }
 
     // --- 表达式解析 (The Expression Parsing Layer - Placeholder) ---
@@ -696,7 +711,7 @@ impl<'a> Parser<'a> {
         match token.kind {
             // 字面量
             TokenType::Integer | TokenType::Float | TokenType::String | TokenType::Bool => {
-                Some(Expr::Literal(LiteralExpr { value: token }))
+                Some(self.ast.alloc_expr(Expr::Literal(LiteralExpr { value: token })))
             }
             // 变量 或 结构体初始化 ---
             TokenType::Identifier => {
@@ -706,22 +721,22 @@ impl<'a> Parser<'a> {
                     self.parse_struct_init_expression(token)
                 } else {
                     // 否则，它就是一个普通的变量
-                    Some(Expr::Variable(VariableExpr { name: token }))
+                    Some(self.ast.alloc_expr(Expr::Variable(VariableExpr { name: token })))
                 }
             }
             // 一元操作符
             TokenType::Minus => {
                 let right = self.parse_expression(Precedence::Prefix)?;
-                Some(Expr::Unary(UnaryExpr {
+                Some(self.ast.alloc_expr(Expr::Unary(UnaryExpr {
                     operator: token,
-                    right: Box::new(right),
-                }))
+                    right,
+                })))
             }
             // 分组
             TokenType::LeftParen => {
                 let expr = self.parse_expression(Precedence::None)?; // 括号内优先级重置
                 self.consume(TokenType::RightParen, "Expected ')' after expression.")?;
-                Some(Expr::Grouping(GroupingExpr { expr: Box::new(expr) }))
+                Some(self.ast.alloc_expr(Expr::Grouping(GroupingExpr { expr })))
             }
             _ => {
                 // 错误：不是一个合法的表达式开头
@@ -733,7 +748,7 @@ impl<'a> Parser<'a> {
     }
 
     // 解析中缀表达式（二元操作、函数调用、成员访问等）。
-    fn parse_infix_expression(&mut self, left: Expr) -> Option<AstId<Expr>> {
+    fn parse_infix_expression(&mut self, left: AstId<Expr>) -> Option<AstId<Expr>> {
         let operator_token = self.current.clone();
         self.advance(); // 消耗掉操作符
 
@@ -745,11 +760,11 @@ impl<'a> Parser<'a> {
             TokenType::Greater | TokenType::GreaterEqual | TokenType::Less |
             TokenType::LessEqual | TokenType::BangEqual | TokenType::EqualEqual => {
                 let right = self.parse_expression(precedence)?;
-                Some(Expr::Binary(BinaryExpr {
-                    left: Box::new(left),
+                Some(self.ast.alloc_expr(Expr::Binary(BinaryExpr {
+                    left,
                     operator: operator_token,
-                    right: Box::new(right),
-                }))
+                    right: right,
+                })))
             }
             
             // --- 赋值 ---
@@ -761,10 +776,10 @@ impl<'a> Parser<'a> {
             // --- 成员访问 ---
             TokenType::Dot => {
                 let field = self.consume(TokenType::Identifier, "Expected a field name after '.'.")?;
-                Some(Expr::MemberAccess(MemberAccessExpr {
-                    object: Box::new(left),
+                Some(self.ast.alloc_expr(Expr::MemberAccess(MemberAccessExpr {
+                    object: left,
                     field,
-                }))
+                })))
             }
 
             _ => {
@@ -774,7 +789,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析函数调用的参数列表 `(...)`
-    fn parse_call_expression(&mut self, callee: Expr) -> Option<AstId<Expr>> {
+    fn parse_call_expression(&mut self, callee: AstId<Expr>) -> Option<AstId<Expr>> {
         let mut args = Vec::new();
 
         if !self.check(TokenType::RightParen) {
@@ -788,10 +803,10 @@ impl<'a> Parser<'a> {
         }
         
         self.consume(TokenType::RightParen, "Expected ')' to close the argument list.")?;
-        Some(Expr::Call(CallExpr {
-            callee: Box::new(callee),
+        Some(self.ast.alloc_expr(Expr::Call(CallExpr {
+            callee: callee,
             args,
-        }))
+        })))
     }
 
     /// 解析结构体初始化 `{ field: value, ... }`
@@ -812,7 +827,7 @@ impl<'a> Parser<'a> {
         }
 
         self.consume(TokenType::RightBrace, "Expected '}' to close a struct initializer.")?;
-        Some(Expr::StructInit(StructInitExpr { name, fields }))
+        Some(self.ast.alloc_expr(Expr::StructInit(StructInitExpr { name, fields })))
     }
 
     /// 解析单个结构体字段 `name: value`
@@ -824,7 +839,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 解析一个赋值表达式 `target = value`
-    fn parse_assignment_expression(&mut self, target: Expr) -> Option<AstId<Expr>> {
+    fn parse_assignment_expression(&mut self, target: AstId<Expr>) -> Option<AstId<Expr>> {
         // 在解析右侧时，我们传入比 Assignment 更低的优先级 (None)，
         // 这将正确处理像 a = b = c 这样的右结合链式赋值。
         let value = self.parse_expression(Precedence::None)?;
@@ -832,9 +847,9 @@ impl<'a> Parser<'a> {
         // TODO: 在语义分析阶段，检查 target 是否是一个合法的“左值”（l-value）
         // 例如，变量和成员访问是合法的，但 `1 + 2 = 3` 是不合法的。
         
-        Some(Expr::Assignment(AssignExpr {
-            target: Box::new(target),
-            value: Box::new(value),
-        }))
+        Some(self.ast.alloc_expr(Expr::Assignment(AssignExpr {
+            target,
+            value: value,
+        })))
     }
 }

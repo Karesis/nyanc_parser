@@ -1,31 +1,33 @@
-use ast::ast_printer::AstPrinter;
+use nyanc_core::FileId;
 use super::*;
 use lexer::Lexer;
 use reporter::DiagnosticsEngine;
 
 /// 核心测试辅助函数，带有详细的错误报告功能
 fn check_parsing(source: &str, expected_ast_str: &str) {
+    // --- 1. 准备环境 ---
     let diagnostics = DiagnosticsEngine::new();
-    let lexer = Lexer::new(source, 0, &diagnostics);
-    let mut parser = Parser::new(lexer, &diagnostics);
+    // 关键：为每一次测试创建一个全新的、独立的 Ast 仓库 (Arena)
+    let mut ast = ast::Ast::new(); 
+    
+    let file_id: FileId = 0; // 在测试中，文件ID设为0即可
+    
+    // --- 2. 运行解析 ---
+    let lexer = Lexer::new(source, file_id, &diagnostics);
+    // 关键：将仓库的可变引用传入 Parser，让它有地方存储节点
+    let mut parser = Parser::new(lexer, &diagnostics, &mut ast);
 
-    let module = parser.parse();
+    // 关键：parse() 现在返回的是 Module 的 ID，而不是 Module 对象本身
+    let module_id = parser.parse();
 
-    // --- 升级后的错误处理 ---
+    // --- 3. 检查解析错误 (这部分逻辑不变) ---
     if diagnostics.has_errors() {
-        // 创建一个字符串来收集所有错误的详细信息
         let mut error_report = String::new();
-        
-        // 从 RefCell 中借用错误列表
         let errors = diagnostics.errors.borrow();
-        
         error_report.push_str("Collected errors:\n");
         for (i, error) in errors.iter().enumerate() {
-            // 使用 {:?} (Debug Trait) 来打印出错误的完整结构，包括枚举变体！
             error_report.push_str(&format!("  {}: {:?}\n", i + 1, error));
         }
-
-        // 在 panic 中包含这份详细的报告
         panic!(
             "Parsing produced unexpected errors for source:\n---\n{}\n---\n{}",
             source,
@@ -33,9 +35,15 @@ fn check_parsing(source: &str, expected_ast_str: &str) {
         );
     }
     
-    let printer = AstPrinter;
-    let generated_ast_str = printer.print_module(&module);
+    // --- 4. 打印并验证 AST 快照 ---
+    // 关键：将仓库的不可变引用传入 Printer，让它能根据 ID 查找到节点
+    let printer = ast::ast_printer::AstPrinter::new(&ast); 
+    
+    // 关键：使用返回的 module_id 从仓库中查找出真正的 Module 节点
+    let module_node = &ast.modules[module_id.get_raw() as usize];
+    let generated_ast_str = printer.print_module(module_node);
 
+    // 快照对比逻辑不变
     if generated_ast_str.trim() != expected_ast_str.trim() {
         println!("--- TEST FAILED: AST Snapshot Mismatch ---");
         println!("--- SOURCE CODE ---\n{}", source);
